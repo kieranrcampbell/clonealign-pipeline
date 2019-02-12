@@ -14,7 +14,7 @@ sces = expand("data/sces/sce_{id}.rds", id=samples)
 cnv_csvs = expand("data/processed_cnv/cnv_{id}.csv", id=samples)
 
 # clonealign fits
-var_qunatiles = [0.5, 0.7, 0.9]
+var_quantiles = [0.5, 0.7, 0.9]
 clonealign_fits = expand("data/clonealign_fits/{id}/clonealign-{id}-var_{v}.rds",
                          id=samples, v=var_quantiles)
 
@@ -79,6 +79,7 @@ rule run_clonealign:
         params=list(id='{wildcards.id}',\
         input_sce='{input.sce}',\
         input_cnv='{input.cnv}',\
+        output_rds='{output.fit}',\
         gex_var_quantile={wildcards.v},\
         max_cnv_var=0.5))\" "
 

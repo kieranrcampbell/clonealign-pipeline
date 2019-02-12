@@ -9,6 +9,7 @@ params:
   id: one
   input_sce: input_sce
   input_cnv: input_cnv
+  output_rds: output.rds
   gex_var_quantile: 0.5
   max_cnv_var: 0.5
 ---
@@ -60,7 +61,7 @@ sce <- calculateQCMetrics(sce)
 
 rowData(sce)$var_log_counts <- rowVars(as.matrix(logcounts(sce)))
 
-var_quantile <- quantile(rowData(sce)$var_log_counts, probs = params$gex_var_quantile)
+var_quantile <- quantile(rowData(sce)$var_log_counts, probs = as.numeric(params$gex_var_quantile))
 
 sce <- sce[rowData(sce)$total_counts > 0 & rowData(sce)$var_log_counts > var_quantile,]
 ```
@@ -125,9 +126,19 @@ stopifnot(all.equal(rownames(cnv_mat), rownames(sce)))
 # Call clonealign
 
 ```{r}
-devtools::load_all("../../clonealign")
+devtools::load_all("/cellassign/clonealign")
+```
+
+```{r}
+ca <- clonealign(sce, cnv_mat, max_iter = 100)
 ```
 
 
 
+
 # Save results
+
+```{r}
+saveRDS(ca, params$output_rds)
+```
+
