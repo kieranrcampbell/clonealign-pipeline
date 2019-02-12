@@ -10,9 +10,10 @@ params:
   var_quantile: 0.5
   ca_fit: clonealign_fit.rds
   cnv_prevs: cnv_prevs.csv
-  sce: sce.rds
+  input_sce: sce.rds
   input_cnv_mat: cnv.rds
   input_cnv_df: cnv.csv
+  output_voom_results: output.rds
 ---
 
 ```{r setup, include = FALSE}
@@ -32,9 +33,12 @@ suppressPackageStartupMessages({
   library(matrixStats)
   library(pheatmap)
   library(limma)  
+  library(edgeR)
 })
 
 devtools::load_all("/cellassign/clonealign/")
+
+source("scripts/utils.R")
 ```
 
 
@@ -49,7 +53,7 @@ df_cnv_prev <- read_csv(params$cnv_prevs)
 ```
 
 ```{r}
-sce <- readRDS(params$sce)
+sce <- readRDS(params$input_sce)
 ```
 
 ```{r}
@@ -57,7 +61,7 @@ cnv_mat <- readRDS(params$input_cnv_mat)
 ```
 
 ```{r}
-cnv_df <- readRDS(params$input_cnv_df)
+cnv_df <- read_csv(params$input_cnv_df)
 ```
 
 
@@ -115,7 +119,7 @@ unique_chrs <- sort(unique(rowData(sce)$chromosome_name))
 for(chr in unique_chrs) {
   tryCatch({
     print(plot_clonealign(sce[rownames(cnv_mat),], ca$clone, cnv_mat, chromosome = chr,
-                    chr_str = "chromosome_name"))
+                    chr_str = "chromosome_name", expression_ylim = c(-.2, .2)))
   }, error = function(e) NULL)
 }
 ```
@@ -126,9 +130,6 @@ for(chr in unique_chrs) {
 
 ## Find genes in copy number altered regions
 
-```{r}
-cnv_df <- read_csv(params$input_cnv_df)
-```
 
 ```{r}
 df_clone_specific_genes <- dplyr::select(cnv_df, -entrezgene, -median_var_copy_number) %>% 
@@ -143,11 +144,69 @@ head(df_clone_specific_genes)
 print(table(df_clone_specific_genes$cn_diff_between_clones))
 ```
 
+```{r}
+non_cnv_genes <- dplyr::filter(df_clone_specific_genes, !cn_diff_between_clones) %>% 
+  .$ensembl_gene_id
+```
+
+
 ## Differential expression
 
+Subset SCE to (i) non CNV different genes, and (ii)
+
 ```{r}
+sce_de <- sce[non_cnv_genes[non_cnv_genes %in% rownames(sce)],]
+```
+
+```{r}
+sce_de <- calculateQCMetrics(sce_de)
+
+sce_de <- sce_de[rowData(sce_de)$total_counts > 200,]
+```
+
+
+
+```{r}
+dge <- DGEList(counts(sce_de))
+dge <- calcNormFactors(dge)
+
+design <- model.matrix(~ ca$clone)
+
+colnames(design) <- gsub("ca$clone", "", colnames(design), fixed = TRUE)
+
+v <- voom(dge, design, plot = TRUE)
+
+fit <- lmFit(v, design)
+fit <- eBayes(fit)
+res <- decideTests(fit)
 
 ```
 
+Diagnostic plots:
+
+```{r}
+plotDensities(fit)
+plotMA(fit)
+```
+
+## Volcano plots
+
+```{r}
+coefs <- seq_len(ncol(design) - 1) + 1
+
+voom_results <- lapply(coefs, make_volcano, fit, sce_de, ca)
+```
+
+Display the plots:
+
+```{r}
+for(i in seq_along(voom_results)) {
+  plot(voom_results[[i]]$plot)
+}
+```
+
+```{r}
+saveRDS(voom_results, params$output_voom_results)
+```
 
 
