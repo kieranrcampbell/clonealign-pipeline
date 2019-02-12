@@ -1,0 +1,153 @@
+---
+title: "Clonealign analysis for `r params$id` with top `r 100 * params$var_quantile`% most variable genes"
+output:
+  html_document: 
+    toc: true
+    toc_float: true
+  html_notebook: default
+params:
+  id: one
+  var_quantile: 0.5
+  ca_fit: clonealign_fit.rds
+  cnv_prevs: cnv_prevs.csv
+  sce: sce.rds
+  input_cnv_mat: cnv.rds
+  input_cnv_df: cnv.csv
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  cache = FALSE
+)
+
+
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(scater)
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  library(matrixStats)
+  library(pheatmap)
+  library(limma)  
+})
+
+devtools::load_all("/cellassign/clonealign/")
+```
+
+
+# Read in data
+
+```{r}
+ca <- readRDS(params$ca_fit)
+```
+
+```{r}
+df_cnv_prev <- read_csv(params$cnv_prevs)
+```
+
+```{r}
+sce <- readRDS(params$sce)
+```
+
+```{r}
+cnv_mat <- readRDS(params$input_cnv_mat)
+```
+
+```{r}
+cnv_df <- readRDS(params$input_cnv_df)
+```
+
+
+
+
+
+# Diagnostic plots
+
+## Convergence
+
+```{r}
+qplot(seq_along(ca$elbo), ca$elbo) +
+  labs(x = "Iteration", y = "ELBO")
+```
+
+## Clone assignment
+
+```{r}
+pheatmap(ca$ml_params$clone_probs)
+```
+
+
+```{r}
+rna_clone_prev <- as_tibble(table(ca$clone)) %>% 
+  dplyr::rename(clone = Var1, n_rna = n) %>% 
+  dplyr::mutate(freq_rna = n_rna / sum(n_rna))
+```
+
+Compare to CNV
+
+```{r}
+df_compare_prev <- df_cnv_prev %>% 
+  dplyr::rename(clone = cluster) %>% 
+  dplyr::full_join(rna_clone_prev, by = "clone") %>% 
+  replace_na(list(n = 0, freq = 0, n_rna = 0, freq_rna = 0))
+
+print(df_compare_prev)
+```
+
+
+```{r}
+ggplot(df_compare_prev, aes(x = freq, y = freq_rna)) +
+  geom_abline(slope = 1, intercept = 0, colour = 'grey50') +
+  # geom_point() +
+  geom_text(aes(label = clone)) +
+  labs(x = "Clone prevalence DNA", y = "Clone prevalence RNA") +
+  theme_bw() 
+```
+
+## Diagnostic plots
+
+```{r, message = FALSE, warning = FALSE}
+unique_chrs <- sort(unique(rowData(sce)$chromosome_name))
+
+for(chr in unique_chrs) {
+  tryCatch({
+    print(plot_clonealign(sce[rownames(cnv_mat),], ca$clone, cnv_mat, chromosome = chr,
+                    chr_str = "chromosome_name"))
+  }, error = function(e) NULL)
+}
+```
+
+
+# Differential expression analysis
+
+
+## Find genes in copy number altered regions
+
+```{r}
+cnv_df <- read_csv(params$input_cnv_df)
+```
+
+```{r}
+df_clone_specific_genes <- dplyr::select(cnv_df, -entrezgene, -median_var_copy_number) %>% 
+  gather(clone, copy_number, -ensembl_gene_id) %>% 
+  group_by(ensembl_gene_id) %>% 
+  summarise(cn_diff_between_clones = var(copy_number) > 0)
+
+head(df_clone_specific_genes)
+```
+
+```{r}
+print(table(df_clone_specific_genes$cn_diff_between_clones))
+```
+
+## Differential expression
+
+```{r}
+
+```
+
+
+

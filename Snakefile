@@ -13,8 +13,9 @@ files10X = ['barcodes.tsv', 'genes.tsv', 'matrix.mtx']
 sces = expand("data/sces/sce_{id}.rds", id=samples)
 cnv_csvs = expand("data/processed_cnv/cnv_{id}.csv", id=samples)
 
+
 # clonealign fits
-var_quantiles = [0.5, 0.7, 0.9]
+var_quantiles = [0.7]
 clonealign_fits = expand("data/clonealign_fits/{id}/clonealign-{id}-var_{v}.rds",
                          id=samples, v=var_quantiles)
 
@@ -72,7 +73,8 @@ rule run_clonealign:
         cnv="data/processed_cnv/cnv_{id}.csv"
     output:
         fit="data/clonealign_fits/{id}/clonealign-{id}-var_{v}.rds",
-        report="reports/clonealign_fits/{id}/clonealign-{id}-var_{v}.html"
+        report="reports/clonealign_fits/{id}/clonealign-{id}-var_{v}.html",
+        cnv_mat="data/processed_cnv/cnv_mat_clonealign_input_{id}_{v}.rds"
     shell:
         "Rscript -e \"rmarkdown::render('pipeline/run_clonealign.Rmd',\
         output_file='{params.curr_dir}/{output.report}', knit_root_dir='{params.curr_dir}',\
@@ -80,6 +82,26 @@ rule run_clonealign:
         input_sce='{input.sce}',\
         input_cnv='{input.cnv}',\
         output_rds='{output.fit}',\
+        output_cnv='{output.cnv_mat}',\
         gex_var_quantile={wildcards.v},\
         max_cnv_var=0.5))\" "
+
+rule clonealign_analysis:
+    input:
+        fit="data/clonealign_fits/{id}/clonealign-{id}-var_{v}.rds",
+        cnv_mat="data/processed_cnv/cnv_mat_clonealign_input_{id}_{v}.rds",
+        sce="data/sces/sce_{id}.rds"
+    output:
+        "reports/clonealign_analysis/{id}/clonealign-analysis-{id}-var_{v}.html"
+    shell:
+        "Rscript -e \"rmarkdown::render('pipeline/clonealign_analysis.Rmd',\
+        output_file='{params.curr_dir}/{output.report}', knit_root_dir='{params.curr_dir}',\
+        params=list(id='{wildcards.id}',\
+        input_sce='{input.sce}',\
+        input_cnv='{input.cnv}',\
+        output_rds='{output.fit}',\
+        output_cnv='{output.cnv_mat}',\
+        gex_var_quantile={wildcards.v},\
+        max_cnv_var=0.5))\" "
+
 

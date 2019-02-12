@@ -10,6 +10,7 @@ params:
   input_sce: input_sce
   input_cnv: input_cnv
   output_rds: output.rds
+  output_cnv: output.cnv
   gex_var_quantile: 0.5
   max_cnv_var: 0.5
 ---
@@ -134,11 +135,9 @@ ca <- clonealign(sce, cnv_mat, max_iter = 100)
 ```
 
 
-
-
 # Save results
 
 ```{r}
 saveRDS(ca, params$output_rds)
+saveRDS(cnv_mat, params$output_cnv)
 ```
-
