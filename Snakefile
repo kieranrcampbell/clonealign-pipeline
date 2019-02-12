@@ -13,11 +13,17 @@ files10X = ['barcodes.tsv', 'genes.tsv', 'matrix.mtx']
 sces = expand("data/sces/sce_{id}.rds", id=samples)
 cnv_csvs = expand("data/processed_cnv/cnv_{id}.csv", id=samples)
 
+# clonealign fits
+var_qunatiles = [0.5, 0.7, 0.9]
+clonealign_fits = expand("data/clonealign_fits/{id}/clonealign-{id}-var_{v}.rds",
+                         id=samples, v=var_quantiles)
+
 
 rule all:
     input:
         sces,
-        cnv_csvs
+        cnv_csvs,
+        clonealign_fits
 
 rule read_qc_scrna:
     params:
@@ -58,4 +64,21 @@ rule copy_number_to_gene:
         prevalence_csv='{output.prev_csv}',\
         output_df='{output.csv}'))\" "
 
+rule run_clonealign:
+    params:
+        curr_dir=os.getcwd()
+    input:
+        sce="data/sces/sce_{id}.rds",
+        cnv="data/processed_cnv/cnv_{id}.csv"
+    output:
+        fit="data/clonealign_fits/{id}/clonealign-{id}-var_{v}.rds",
+        report="reports/clonealign_fits/{id}/clonealign-{id}-var_{v}.html"
+    shell:
+        "Rscript -e \"rmarkdown::render('pipeline/run_clonealign.Rmd',\
+        output_file='{params.curr_dir}/{output.report}', knit_root_dir='{params.curr_dir}',\
+        params=list(id='{wildcards.id}',\
+        input_sce='{input.sce}',\
+        input_cnv='{input.cnv}',\
+        gex_var_quantile={wildcards.v},\
+        max_cnv_var=0.5))\" "
 

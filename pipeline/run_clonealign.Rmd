@@ -1,0 +1,133 @@
+---
+title: "Preparing copy number data for input to clonealign for sample `r params$id`"
+output:
+  html_document: 
+    toc: true
+    toc_float: true
+  html_notebook: default
+params:
+  id: one
+  input_sce: input_sce
+  input_cnv: input_cnv
+  gex_var_quantile: 0.5
+  max_cnv_var: 0.5
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  cache = FALSE
+)
+
+
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(scater)
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+  library(org.Hs.eg.db)
+  library(GenomicRanges)
+  library(matrixStats)
+})
+```
+
+
+# Read in data
+
+```{r}
+sce <- readRDS(params$input_sce)
+```
+
+```{r}
+cnv <- read_csv(params$input_cnv)
+```
+
+
+
+
+# Gene Selection
+
+
+## Expression
+
+Let's subset the SCE to only expressed genes: re-QC first
+
+```{r}
+sce <- calculateQCMetrics(sce)
+
+rowData(sce)$var_log_counts <- rowVars(as.matrix(logcounts(sce)))
+
+var_quantile <- quantile(rowData(sce)$var_log_counts, probs = params$gex_var_quantile)
+
+sce <- sce[rowData(sce)$total_counts > 0 & rowData(sce)$var_log_counts > var_quantile,]
+```
+
+
+## Copy number
+
+Distribution of within-clone copy number variances:
+
+```{r}
+ggplot(cnv, aes(x = median_var_copy_number)) +
+  geom_histogram(bins = 200) +
+  scale_y_log10() +
+  labs(x = "Median within-clone variance in copy number") +
+  geom_vline(xintercept = params$max_cnv_var, linetype = 2, colour = 'red')
+```
+
+
+
+```{r}
+cnv <- dplyr::filter(cnv, median_var_copy_number < params$max_cnv_var)
+```
+
+Now turn into matrix:
+
+```{r}
+cnv_mat <- dplyr::select(cnv, -(ensembl_gene_id:median_var_copy_number)) %>% 
+  as.matrix()
+
+rownames(cnv_mat) <- cnv$ensembl_gene_id
+```
+
+And filter genes:
+
+```{r}
+keep_gene_cnv <- rowMaxs(cnv_mat) < 7 & rowMins(cnv_mat) > 0 & rowVars(cnv_mat) > 0
+print(table(keep_gene_cnv))
+```
+
+```{r}
+cnv_mat <- cnv_mat[keep_gene_cnv,]
+```
+
+## Take intersect of gene sets
+
+```{r}
+common_genes <- intersect(rownames(cnv_mat), rownames(sce))
+```
+
+```{r}
+cnv_mat <- cnv_mat[common_genes,]
+sce <- sce[common_genes,]
+```
+
+Final check:
+
+```{r}
+stopifnot(all.equal(rownames(cnv_mat), rownames(sce)))
+```
+
+
+# Call clonealign
+
+```{r}
+devtools::load_all("../../clonealign")
+```
+
+
+
+# Save results
