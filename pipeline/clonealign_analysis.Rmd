@@ -149,7 +149,7 @@ ggplot(df_cor, aes(x = mean_log_expression, y=  correlation)) +
 ```{r}
 ggplot(df_cor, aes(x = correlation)) +
   geom_histogram(fill = 'grey90', colour ='black', bins = 100) +
-  geom_vline(xintercept = mean(df_cor$correlation), linetype = 2, colour = 'darkred', size = 1) +
+  geom_vline(xintercept = mean(df_cor$correlation, na.rm = TRUE), linetype = 2, colour = 'darkred', size = 1) +
   theme_bw() +
   labs(x = "Genome-transcriptome correlation")
 
