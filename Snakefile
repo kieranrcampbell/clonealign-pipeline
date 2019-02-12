@@ -15,7 +15,7 @@ cnv_csvs = expand("data/processed_cnv/cnv_{id}.csv", id=samples)
 
 
 # Clonealign fits
-var_quantiles = [0.7]
+var_quantiles = [0.7, 0.9]
 clonealign_fits = expand("data/clonealign_fits/{id}/clonealign-{id}-var_{v}.rds",
                          id=samples, v=var_quantiles)
 # Clonealign analysis

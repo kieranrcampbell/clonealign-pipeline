@@ -111,7 +111,7 @@ ggplot(df_compare_prev, aes(x = freq, y = freq_rna)) +
   theme_bw() 
 ```
 
-## Diagnostic plots
+## Expression vs copy number track plots
 
 ```{r, message = FALSE, warning = FALSE}
 unique_chrs <- sort(unique(rowData(sce)$chromosome_name))
@@ -122,6 +122,41 @@ for(chr in unique_chrs) {
                     chr_str = "chromosome_name", expression_ylim = c(-.2, .2)))
   }, error = function(e) NULL)
 }
+```
+
+
+## Correlation between genome and transcriptome
+
+```{r}
+sce_ca <- sce[rownames(cnv_mat),]
+
+compute_correlation <- function(i) {
+  y <- logcounts(sce_ca)[i,]
+  x <- cnv_mat[i, ca$clone]
+  c <- cor(x,y, method = "spearman")
+  tibble(mean_log_expression = mean(y), correlation = c)
+}
+
+df_cor <- bind_rows(lapply(seq_len(nrow(sce_ca)), compute_correlation))
+```
+
+```{r}
+ggplot(df_cor, aes(x = mean_log_expression, y=  correlation)) +
+  geom_point() +
+  geom_smooth()
+```
+
+```{r}
+ggplot(df_cor, aes(x = correlation)) +
+  geom_histogram(fill = 'grey90', colour ='black', bins = 100) +
+  geom_vline(xintercept = mean(df_cor$correlation), linetype = 2, colour = 'darkred', size = 1) +
+  theme_bw() +
+  labs(x = "Genome-transcriptome correlation")
+
+```
+
+```{r}
+print(summary(df_cor$correlation))
 ```
 
 
