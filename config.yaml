@@ -1,0 +1,10 @@
+# Paths
+metadata: data/metadata/samples.csv
+scrna_path: data/scrna10X_cellranger_output
+cnv_clone_path: data/cnv_clones
+
+# scRNA-seq QC filters
+max_mito: 10
+min_features: 1000
+
+

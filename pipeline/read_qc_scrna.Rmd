@@ -1,0 +1,145 @@
+---
+title: "scRNA-seq QC report for `r params$id`"
+author: "Kieran R Campbell"
+output:
+  html_document: 
+    toc: true
+    toc_float: true
+  html_notebook: default
+params:
+  id: one
+  input_10X_path: input_path
+  output_sce_path: path_to_sce.rds
+  max_mito: 10
+  min_features: 1000
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      cache = FALSE)
+
+suppressPackageStartupMessages({
+  library(scater)
+  library(SingleCellExperiment)
+  library(DropletUtils)
+  library(glue)
+})
+```
+
+QC params:
+
+- Maximum % mitochondrial: `r params$max_mito`
+- Minimum number of features: `r params$min_features`
+
+# Read in data and convert to SingleCellExperiment
+
+```{r}
+sce <- read10xCounts(params$input_10X_path)
+sce$id <- params$id
+print(sce)
+```
+
+Add required chromosome information:
+
+```{r}
+rowData(sce)$ensembl_gene_id <- rownames(sce)
+  
+sce <- getBMFeatureAnnos(sce, filters = "ensembl_gene_id",
+attributes = c("ensembl_gene_id", "hgnc_symbol", "entrezgene",
+"start_position", "end_position", "chromosome_name"),
+dataset = "hsapiens_gene_ensembl")
+```
+  
+Calculate size factors
+
+```{r}
+sce <- scran::computeSumFactors(sce)
+```
+  
+Compute log expression values
+
+```{r}
+sce <- normalize(sce)
+```
+  
+
+Get Mitochondrial genes for QC:
+
+```{r}
+mt_genes <- which(rowData(sce)$chromosome_name == "MT")
+ribo_genes <- grepl("^RP[LS]", rowData(sce)$Symbol)
+feature_ctrls <- list(mito = rownames(sce)[mt_genes],
+                      ribo = rownames(sce)[ribo_genes])
+```
+
+
+  
+Calculate QC metrics
+
+```{r}
+sce <- calculateQCMetrics(sce, feature_controls = feature_ctrls)
+```
+
+  
+  
+
+  
+ Make sure colnames are unique
+ 
+```{r}
+colnames(sce) <- paste0(sce$id, "_", sce$Barcode)
+```
+ 
+
+
+# Reduced dimension plots and quality control
+
+Run PCA first:
+
+```{r}
+sce <- runPCA(sce, ncomponents = 3)
+```
+
+```{r}
+set.seed(123L)
+sce <- runTSNE(sce)
+```
+
+
+PCA plots:
+
+```{r}
+plotPCA(sce, colour_by = "total_features_by_counts")
+plotPCA(sce, colour_by = "pct_counts_mito")
+plotPCA(sce, colour_by = "pct_counts_ribo")
+```
+
+
+```{r}
+plotPhenoData(sce, x = "total_features_by_counts", y = "pct_counts_mito")
+plotPhenoData(sce, x = "total_features_by_counts", y = "total_counts")
+```
+
+Number of cells to retain:
+
+```{r}
+cells_to_keep <- sce$total_features_by_counts > as.numeric(params$min_features) & 
+  sce$pct_counts_mito < as.numeric(params$max_mito)
+table(cells_to_keep)
+```
+
+```{r}
+sce <- sce[,cells_to_keep]
+print(sce)
+```
+
+And save to file:
+
+```{r}
+saveRDS(sce, params$output_sce_path)
+```
+
+
+
+
+
