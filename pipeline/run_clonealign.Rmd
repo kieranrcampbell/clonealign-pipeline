@@ -1,18 +1,19 @@
 ---
-title: "Preparing copy number data for input to clonealign for sample `r params$id`"
+title: "Run clonealign for sample `r params$id`"
 output:
   html_document: 
     toc: true
     toc_float: true
   html_notebook: default
 params:
-  id: one
+  id: SA609XXX
+  pdx: SA609
+  clone_prevs: clone_prevs.csv
   input_sce: input_sce
-  input_cnv: input_cnv
   output_rds: output.rds
   output_cnv: output.cnv
   gex_var_quantile: 0.5
-  max_cnv_var: 0.5
+  max_cnv_var: 1
 ---
 
 ```{r setup, include = FALSE}
@@ -33,6 +34,7 @@ suppressPackageStartupMessages({
   library(org.Hs.eg.db)
   library(GenomicRanges)
   library(matrixStats)
+  library(here)
 })
 ```
 
@@ -44,28 +46,30 @@ sce <- readRDS(params$input_sce)
 ```
 
 ```{r}
-cnv <- read_csv(params$input_cnv)
+cnv_file <- here("data", "processed_cnv", paste0("cnv_", params$pdx, ".csv"))
+cnv <- read_csv(cnv_file)
+```
+
+Clone prevalence:
+
+```{r}
+df_clone_prev <- read_csv(params$clone_prevs)
+
+timepoint <- sce$timepoint[1]
+
+df_clone_prev <- filter(df_clone_prev, time == timepoint)
+
+present_clones <- unique(df_clone_prev$cluster)
 ```
 
 
+```{r}
+cnv <- dplyr::select(cnv, one_of(c("ensembl_gene_id", "entrezgene", "intra_clone_var", "inter_clone_var", present_clones)))
+```
 
 
 # Gene Selection
 
-
-## Expression
-
-Let's subset the SCE to only expressed genes: re-QC first
-
-```{r}
-sce <- calculateQCMetrics(sce)
-
-rowData(sce)$var_log_counts <- rowVars(as.matrix(logcounts(sce)))
-
-var_quantile <- quantile(rowData(sce)$var_log_counts, probs = as.numeric(params$gex_var_quantile))
-
-sce <- sce[rowData(sce)$total_counts > 0 & rowData(sce)$var_log_counts > var_quantile,]
-```
 
 
 ## Copy number
@@ -73,23 +77,28 @@ sce <- sce[rowData(sce)$total_counts > 0 & rowData(sce)$var_log_counts > var_qua
 Distribution of within-clone copy number variances:
 
 ```{r}
-ggplot(cnv, aes(x = median_var_copy_number)) +
-  geom_histogram(bins = 200) +
-  scale_y_log10() +
-  labs(x = "Median within-clone variance in copy number") +
-  geom_vline(xintercept = params$max_cnv_var, linetype = 2, colour = 'red')
+ggplot(cnv, aes(x = intra_clone_var, y = inter_clone_var)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10()
+
 ```
 
 
 
+
+
 ```{r}
-cnv <- dplyr::filter(cnv, median_var_copy_number < params$max_cnv_var)
+cnv <- dplyr::filter(cnv, 
+              intra_clone_var < 1, 
+              inter_clone_var > 0,
+              intra_clone_var < 0.5 * inter_clone_var)
 ```
 
 Now turn into matrix:
 
 ```{r}
-cnv_mat <- dplyr::select(cnv, -(ensembl_gene_id:median_var_copy_number)) %>% 
+cnv_mat <- dplyr::select(cnv, -(ensembl_gene_id:inter_clone_var)) %>% 
   as.matrix()
 
 rownames(cnv_mat) <- cnv$ensembl_gene_id
@@ -105,6 +114,34 @@ print(table(keep_gene_cnv))
 ```{r}
 cnv_mat <- cnv_mat[keep_gene_cnv,]
 ```
+
+
+## Expression
+
+Let's subset the SCE to only expressed genes that are in CNV regions: re-QC first
+
+```{r}
+rn <- rownames(cnv_mat)
+rn <- rn[rn %in% rownames(sce)]
+
+sce <- sce[rn,]
+
+sce <- calculateQCMetrics(sce)
+
+rowData(sce)$var_log_counts <- rowVars(as.matrix(logcounts(sce)))
+
+var_quantile <- quantile(rowData(sce)$var_log_counts, probs = as.numeric(params$gex_var_quantile))
+
+sce <- sce[rowData(sce)$total_counts > 0 & rowData(sce)$var_log_counts > var_quantile,]
+```
+
+Remove the usual suspects - genes likely to be affected by tissue dissociation
+
+```{r}
+usual_suspects <- grepl("^HSP|^FOS|^JUN|^MALAT1|^UBC", rowData(sce)$Symbol)
+sce <- sce[!usual_suspects,]
+```
+
 
 ## Take intersect of gene sets
 
@@ -126,13 +163,18 @@ stopifnot(all.equal(rownames(cnv_mat), rownames(sce)))
 
 # Call clonealign
 
-```{r}
-devtools::load_all("/cellassign/clonealign")
-```
 
 ```{r}
-ca <- clonealign(sce, cnv_mat, max_iter = 100)
+devtools::load_all("/cellassign/clonealign-multinomial/")
+
+
+ca <- run_clonealign(sce, 
+                     cnv_mat,
+                     max_iter = 500)
+
+
 ```
+
 
 
 # Save results

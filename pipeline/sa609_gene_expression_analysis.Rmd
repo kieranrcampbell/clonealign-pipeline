@@ -35,39 +35,207 @@ suppressPackageStartupMessages({
   library(pheatmap)
   library(limma)  
   library(edgeR)
+  library(cowplot)
+  library(here)
 })
-
-devtools::load_all("/cellassign/clonealign/")
-
-source("scripts/utils.R")
 ```
 
 
 # Read in data
 
+
 ```{r}
-ca <- readRDS(params$ca_fit)
+sces <- list(
+  X3 = readRDS(here("/data/sces/sce-qc_SA609X3XB01584.rds")),
+  X6 = readRDS(here("data/sces/sce-qc_SA609X6XB01899.rds")),
+  X10 = readRDS(here("data/sces/sce-qc_SA609X10XB02454.rds"))
+)
 ```
 
 ```{r}
-df_clone_prev <- read_csv(params$clone_prevs)
+timepoints <- names(sces)
+```
+
+
+```{r}
+clonealign_fits <- list(
+  X3 = readRDS("../data/clonealign_fits/SA609X3XB01584/clonealign-SA609X3XB01584-var_0.3.rds"),
+  X6 = readRDS("../data/clonealign_fits/SA609X6XB01899/clonealign-SA609X6XB01899-var_0.3.rds"),
+  X10 = readRDS("../data/clonealign_fits/SA609X10XB02454/clonealign-SA609X10XB02454-var_0.3.rds")
+)
 ```
 
 ```{r}
-sce <- readRDS(params$input_sce)
+for(timepoint in timepoints) {
+  sces[[ timepoint ]]$clone <- clonealign_fits[[ timepoint ]]$clone
+}
+```
+
+Load in CNV data here
+
+```{r}
+cnv <- read_csv(here("data/processed_cnv/cnv_SA609.csv"))
+```
+
+
+```{r}
+dlp_clone_prev <- read_csv(here("data/processed_cnv/clone_prevalence_SA609.csv"))
+```
+
+
+# Visualizations
+
+Colour scheme:
+
+```{r}
+sa609_cols <- c("A"="#66C2A5",
+                "C"="#FC8D62",
+                "B"="#8DA0CB",
+                "D"="#E78AC3",
+                "E"="#A6D854")
+
+scale_clone_sa609 <- function(...) {
+  scale_colour_manual(values = sa609_cols, name = "Clone", ...)
+}
+```
+
+
+```{r}
+sces <- lapply(sces, runUMAP)
 ```
 
 ```{r}
-cnv_mat <- readRDS(params$input_cnv_mat)
+umap_dims <- lapply(sces, function(sce) reducedDims(sce)[['UMAP']])
+umap_dims <- do.call('rbind', umap_dims)
+clones <- unlist(sapply(sces, function(sce) sce$clone))
+cell_timepoints <- unlist(sapply(sces, function(sce) sce$timepoint))
+
+df_umap <- as_tibble(umap_dims) %>% 
+  dplyr::mutate(clone = clones,
+         timepoint = factor(cell_timepoints, levels = timepoints))
+
 ```
 
 ```{r}
-cnv_df <- read_csv(params$input_cnv_df)
+ggplot(df_umap, aes(x = V1, y = V2, colour = clone)) +
+  geom_point() +
+  facet_wrap(~ timepoint, nrow = 1) +
+  scale_colour_brewer(palette = "Spectral")
+```
+
+
+```{r}
+dlp_clone_prev <- dlp_clone_prev %>% 
+  group_by(time) %>% 
+  mutate(freq = n / sum(n))
+```
+
+
+```{r}
+clones_counted <- count(df_umap, clone, timepoint)
+
+clones_counted <- group_by(clones_counted, timepoint) %>%
+  mutate(prev = n / sum(n)) %>% 
+  ungroup()
+
+# dirty trick to get 0s in missing entries
+clones_counted <- select(clones_counted, -n) %>%
+  spread(timepoint, prev, fill = 0) %>%
+  gather(timepoint, prev, -clone) %>% 
+  mutate(timepoint = factor(timepoint, levels = timepoints))
+
+clones_counted <- rename(dlp_clone_prev, clone = cluster, timepoint = time, prev = freq) %>% 
+  select(-n) %>% 
+  right_join(clones_counted, suffix = c("_dlp", "_rna"), by = c("clone", "timepoint")) %>% 
+  replace_na(list(prev_dlp = 0))
+
+clones_counted <- ungroup(clones_counted)
+
+clones_counted <- rename(clones_counted, DLP = prev_dlp, RNA = prev_rna) %>% 
+  gather(modality, prevalence, -clone, -timepoint) %>% 
+  mutate(timepoint = factor(timepoint, levels = timepoints))
+
+ggplot(clones_counted, aes(x = timepoint, y = prevalence, 
+                           colour = clone, group = clone)) +
+  geom_line(size = 1.5) +
+  geom_point(size = 3) +
+  labs(x = "Timepoint", y = "Clonal prevalence") +
+  scale_clone_sa609() +
+  facet_wrap(~ modality)
+```
+
+```{r}
+ggsave("../figs/clonal-prevalence-sa609.png", width = 10, height = 4)
 ```
 
 
 
+# Differential expression
 
+Useful functions:
+
+```{r}
+annotate_cnv_genes <- function(sce, cnv_genes, no_cnv_genes) {
+  rowData(sce)$cnv_gene <- "unknown"
+  rowData(sce)$cnv_gene[rownames(sce) %in% cnv_genes] <- "cnv"
+  rowData(sce)$cnv_gene[rownames(sce) %in% no_cnv_genes] <- "no_cnv"
+  sce
+}
+```
+
+
+## Confirmatory
+
+### A vs C
+
+```{r}
+cnv_a_vs_c <- select(cnv, one_of(c("ensembl_gene_id", "entrezgene", "intra_clone_var", "inter_clone_var", "A", "C")))
+
+a_vs_c_cnv_gene <- filter(cnv_a_vs_c, A != C) %>% .$ensembl_gene_id
+a_vs_c_no_cnv_gene <- filter(cnv_a_vs_c, A == C) %>% .$ensembl_gene_id
+```
+
+#### A vs C at X3
+
+```{r}
+sceX3 <- sces$X3
+sceX3 <- annotate_cnv_genes(sceX3, a_vs_c_cnv_gene, a_vs_c_no_cnv_gene)
+
+sceX3_de <- sceX3[rowData(sceX3)$cnv_gene == "no_cnv", sceX3$clone %in% c("A", "C")]
+```
+
+```{r}
+sceX3_de <- sceX3[rowSums(as.matrix(counts(sceX3_de))) > 50,]
+```
+
+```{r}
+dge <- DGEList(counts(sceX3_de))
+dge <- calcNormFactors(dge)
+
+design <- model.matrix(~ sceX3_de$clone)
+
+colnames(design) <- gsub("sceX3_de$clone", "", colnames(design), fixed = TRUE)
+
+v <- voom(dge, design, plot = TRUE)
+
+fit <- lmFit(v, design)
+fit <- eBayes(fit)
+res <- decideTests(fit)
+```
+
+
+#### A vs C at X6
+
+
+### D vs E
+
+#### D vs E at X6
+
+#### D vs E at X10
+
+
+
+## X6 DE
 
 # Diagnostic plots
 
