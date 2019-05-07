@@ -39,7 +39,7 @@ suppressPackageStartupMessages({
 
 devtools::load_all("/cellassign/clonealign/")
 
-source("scripts/utils.R")
+# source("scripts/utils.R")
 ```
 
 
@@ -87,6 +87,7 @@ pheatmap(ca$ml_params$clone_probs)
 
 ```{r}
 rna_clone_prev <- enframe(table(ca$clone), "clone", "n_rna") %>% 
+  dplyr::filter(clone != "unassigned") %>% 
   dplyr::mutate(freq_rna = n_rna / sum(n_rna))
 ```
 
@@ -95,7 +96,7 @@ Compare to CNV
 ```{r}
 timepoint <- sce$timepoint[1]
 
-df_clone_prev <- filter(df_clone_prev, time == timepoint)
+df_clone_prev <- dplyr::filter(df_clone_prev, time == timepoint)
 ```
 
 
@@ -103,8 +104,8 @@ df_clone_prev <- filter(df_clone_prev, time == timepoint)
 df_compare_prev <- df_clone_prev %>% 
   dplyr::select(-time) %>% 
   dplyr::rename(clone = cluster) %>% 
-  mutate(freq = n / sum(n)) %>%
-  rename(freq_dna = freq, n_dna = n) %>% 
+  dplyr::mutate(freq = n / sum(n)) %>%
+  dplyr::rename(freq_dna = freq, n_dna = n) %>% 
   dplyr::full_join(rna_clone_prev, by = "clone") %>% 
   replace_na(list(n_dna = 0, freq_dna = 0, n_rna = 0, freq_rna = 0))
 
@@ -121,40 +122,14 @@ ggplot(df_compare_prev, aes(x = freq_dna, y = freq_rna)) +
   theme_bw() 
 ```
 
-## Expression vs copy number track plots
-
-```{r, message = FALSE, warning = FALSE}
-unique_chrs <- sort(unique(rowData(sce)$chromosome_name))
-
-for(chr in unique_chrs) {
-  tryCatch({
-    print(plot_clonealign(sce[rownames(cnv_mat),], ca$clone, cnv_mat, chromosome = chr,
-                    chr_str = "chromosome_name", expression_ylim = c(-.2, .2)))
-  }, error = function(e) NULL)
-}
-```
 
 
 ## Correlation between genome and transcriptome
 
 ```{r}
-sce_ca <- sce[rownames(cnv_mat),]
-
-compute_correlation <- function(i) {
-  y <- logcounts(sce_ca)[i,]
-  x <- cnv_mat[i, ca$clone]
-  c <- cor(x,y, method = "spearman")
-  tibble(mean_log_expression = mean(y), correlation = c)
-}
-
-df_cor <- bind_rows(lapply(seq_len(nrow(sce_ca)), compute_correlation))
+df_cor <- tibble(correlation = ca$correlations)
 ```
 
-```{r}
-ggplot(df_cor, aes(x = mean_log_expression, y=  correlation)) +
-  geom_point() +
-  geom_smooth()
-```
 
 ```{r}
 ggplot(df_cor, aes(x = correlation)) +
@@ -170,88 +145,5 @@ print(summary(df_cor$correlation))
 ```
 
 
-# Differential expression analysis
-
-
-## Find genes in copy number altered regions
-
-
-```{r}
-df_clone_specific_genes <- dplyr::select(cnv_df, -entrezgene, -intra_clone_var, -inter_clone_var) %>% 
-  gather(clone, copy_number, -ensembl_gene_id) %>% 
-  group_by(ensembl_gene_id) %>% 
-  summarise(cn_diff_between_clones = var(copy_number) > 0)
-
-head(df_clone_specific_genes)
-```
-
-```{r}
-print(table(df_clone_specific_genes$cn_diff_between_clones))
-```
-
-```{r}
-non_cnv_genes <- dplyr::filter(df_clone_specific_genes, !cn_diff_between_clones) %>% 
-  .$ensembl_gene_id
-```
-
-
-## Differential expression
-
-Subset SCE to (i) non CNV different genes, and (ii)
-
-```{r}
-sce_de <- sce[non_cnv_genes[non_cnv_genes %in% rownames(sce)],]
-```
-
-```{r}
-sce_de <- calculateQCMetrics(sce_de)
-
-sce_de <- sce_de[rowData(sce_de)$total_counts > 200,]
-```
-
-
-
-```{r}
-dge <- DGEList(counts(sce_de))
-dge <- calcNormFactors(dge)
-
-design <- model.matrix(~ ca$clone)
-
-colnames(design) <- gsub("ca$clone", "", colnames(design), fixed = TRUE)
-
-v <- voom(dge, design, plot = TRUE)
-
-fit <- lmFit(v, design)
-fit <- eBayes(fit)
-res <- decideTests(fit)
-
-```
-
-Diagnostic plots:
-
-```{r}
-plotDensities(fit)
-plotMA(fit)
-```
-
-## Volcano plots
-
-```{r}
-coefs <- seq_len(ncol(design) - 1) + 1
-
-voom_results <- lapply(coefs, make_volcano, fit, sce_de, ca)
-```
-
-Display the plots:
-
-```{r}
-for(i in seq_along(voom_results)) {
-  plot(voom_results[[i]]$plot)
-}
-```
-
-```{r}
-saveRDS(voom_results, params$output_voom_results)
-```
 
 

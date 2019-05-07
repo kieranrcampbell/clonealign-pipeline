@@ -22,14 +22,14 @@ sces_qc = expand("data/sces/sce-qc_{id}.rds", id=samples)
 cnv_csvs = expand("data/processed_cnv/cnv_{pdx}.csv", pdx=pdxs)
 
 # Clonealign fits
-var_quantiles = [0.3, 0.5]
+var_quantiles = [0.5]
 clonealign_fits = expand("data/clonealign_fits/{id}/clonealign-{id}-var_{v}.rds",
                          id=samples, v=var_quantiles)
 # Clonealign analysis
 clonealign_reports = expand("reports/clonealign_analysis/{id}/clonealign-analysis-{id}-var_{v}.html",
                             id=samples, v=var_quantiles)
-de_fits = expand("data/differential_expression/{id}/limma-voom-de-{id}-var_{v}.rds",
-                 id=samples, v=var_quantiles)
+# de_fits = expand("data/differential_expression/{id}/limma-voom-de-{id}-var_{v}.rds",
+#                  id=samples, v=var_quantiles)
 
 
 
@@ -38,7 +38,7 @@ rule all:
         sces_qc,
         cnv_csvs,
         clonealign_fits,
-        clonealign_reports,de_fits
+        clonealign_reports
 
 rule read_qc_scrna:
     params:
@@ -82,7 +82,7 @@ rule copy_number_to_gene:
         report="reports/processed_cnv/processed_cnv_{pdx}.html",
         prev_csv="data/processed_cnv/clone_prevalence_{pdx}.csv"
     shell:
-        "Rscript -e \"rmarkdown::render('pipeline/parse_cnv_data-april-retest.Rmd', \
+        "Rscript -e \"rmarkdown::render('pipeline/parse_cnv_data-may-retest.Rmd', \
         output_file='{params.curr_dir}/{output.report}', knit_root_dir='{params.curr_dir}', \
         params=list(pdx='{wildcards.pdx}', \
         prevalence_csv='{output.prev_csv}',\
@@ -123,8 +123,8 @@ rule clonealign_analysis:
         sce="data/sces/sce-qc_{id}.rds",
         prev_csv=lambda wildcards: "data/processed_cnv/clone_prevalence_{}.csv".format(sample_dict['pdx'][wildcards.id])
     output:
-        report="reports/clonealign_analysis/{id}/clonealign-analysis-{id}-var_{v}.html",
-        de_fit="data/differential_expression/{id}/limma-voom-de-{id}-var_{v}.rds"
+        report="reports/clonealign_analysis/{id}/clonealign-analysis-{id}-var_{v}.html"#,
+#        de_fit="data/differential_expression/{id}/limma-voom-de-{id}-var_{v}.rds"
     shell:
         "Rscript -e \"rmarkdown::render('pipeline/clonealign_analysis.Rmd',\
         output_file='{params.curr_dir}/{output.report}', knit_root_dir='{params.curr_dir}',\
@@ -134,7 +134,7 @@ rule clonealign_analysis:
         input_cnv_mat='{input.cnv_mat}',\
         input_cnv_df='{input.cnv_df}',\
         ca_fit='{input.fit}',\
-        clone_prevs='{input.prev_csv}',\
-        output_voom_results='{output.de_fit}'))\" "
+        clone_prevs='{input.prev_csv}'))\" "
+
 
 

@@ -37,7 +37,11 @@ suppressPackageStartupMessages({
   library(edgeR)
   library(cowplot)
   library(here)
+  library(ggrepel)
+  library(org.Hs.eg.db)
 })
+
+theme_set(cowplot::theme_cowplot(font_size = 11))
 ```
 
 
@@ -59,9 +63,9 @@ timepoints <- names(sces)
 
 ```{r}
 clonealign_fits <- list(
-  X3 = readRDS("../data/clonealign_fits/SA609X3XB01584/clonealign-SA609X3XB01584-var_0.3.rds"),
-  X6 = readRDS("../data/clonealign_fits/SA609X6XB01899/clonealign-SA609X6XB01899-var_0.3.rds"),
-  X10 = readRDS("../data/clonealign_fits/SA609X10XB02454/clonealign-SA609X10XB02454-var_0.3.rds")
+  X3 = readRDS("../data/clonealign_fits/SA609X3XB01584/clonealign-SA609X3XB01584-var_0.5.rds"),
+  X6 = readRDS("../data/clonealign_fits/SA609X6XB01899/clonealign-SA609X6XB01899-var_0.5.rds"),
+  X10 = readRDS("../data/clonealign_fits/SA609X10XB02454/clonealign-SA609X10XB02454-var_0.5.rds")
 )
 ```
 
@@ -92,7 +96,8 @@ sa609_cols <- c("A"="#66C2A5",
                 "C"="#FC8D62",
                 "B"="#8DA0CB",
                 "D"="#E78AC3",
-                "E"="#A6D854")
+                "E"="#A6D854",
+                "unassigned" = "grey70")
 
 scale_clone_sa609 <- function(...) {
   scale_colour_manual(values = sa609_cols, name = "Clone", ...)
@@ -116,58 +121,84 @@ df_umap <- as_tibble(umap_dims) %>%
 
 ```
 
-```{r}
+```{r fig.width = 8, fig.height = 3}
 ggplot(df_umap, aes(x = V1, y = V2, colour = clone)) +
   geom_point() +
   facet_wrap(~ timepoint, nrow = 1) +
-  scale_colour_brewer(palette = "Spectral")
+  scale_clone_sa609() +
+  labs(x = "UMAP1", y = "UMAP2", subtitle = "Time point") +
+  cowplot::theme_cowplot(font_size = 11) +
+  theme(strip.background = element_rect(fill = 'grey90'),
+        plot.subtitle = element_text(hjust = 0.5))
 ```
 
 
 ```{r}
 dlp_clone_prev <- dlp_clone_prev %>% 
   group_by(time) %>% 
-  mutate(freq = n / sum(n))
+  dplyr::mutate(freq = n / sum(n))
 ```
 
 
-```{r}
-clones_counted <- count(df_umap, clone, timepoint)
+```{r fig.width = 8, fig.height = 3}
+clones_counted <- dplyr::filter(df_umap, clone != "unassigned") %>% 
+  count(clone, timepoint)
 
 clones_counted <- group_by(clones_counted, timepoint) %>%
-  mutate(prev = n / sum(n)) %>% 
+  dplyr::mutate(prev = n / sum(n)) %>% 
   ungroup()
 
 # dirty trick to get 0s in missing entries
-clones_counted <- select(clones_counted, -n) %>%
+clones_counted <- dplyr::select(clones_counted, -n) %>%
   spread(timepoint, prev, fill = 0) %>%
   gather(timepoint, prev, -clone) %>% 
-  mutate(timepoint = factor(timepoint, levels = timepoints))
+  dplyr::mutate(timepoint = factor(timepoint, levels = timepoints))
 
-clones_counted <- rename(dlp_clone_prev, clone = cluster, timepoint = time, prev = freq) %>% 
-  select(-n) %>% 
+clones_counted <- dplyr::rename(dlp_clone_prev, clone = cluster, timepoint = time, prev = freq) %>% 
+  dplyr::select(-n) %>% 
   right_join(clones_counted, suffix = c("_dlp", "_rna"), by = c("clone", "timepoint")) %>% 
   replace_na(list(prev_dlp = 0))
 
 clones_counted <- ungroup(clones_counted)
 
-clones_counted <- rename(clones_counted, DLP = prev_dlp, RNA = prev_rna) %>% 
+clones_counted <- dplyr::rename(clones_counted, DLP = prev_dlp, RNA = prev_rna) %>% 
   gather(modality, prevalence, -clone, -timepoint) %>% 
-  mutate(timepoint = factor(timepoint, levels = timepoints))
+  dplyr::mutate(timepoint = factor(timepoint, levels = timepoints))
 
 ggplot(clones_counted, aes(x = timepoint, y = prevalence, 
                            colour = clone, group = clone)) +
   geom_line(size = 1.5) +
   geom_point(size = 3) +
-  labs(x = "Timepoint", y = "Clonal prevalence") +
+  labs(x = "Timepoint", y = "Clonal prevalence", subtitle = "Modality") +
   scale_clone_sa609() +
-  facet_wrap(~ modality)
+  facet_wrap(~ modality) +
+  cowplot::theme_cowplot(font_size = 11) +
+  theme(strip.background = element_rect(fill = 'grey90'),
+        plot.subtitle = element_text(hjust = 0.5))
 ```
 
 ```{r}
-ggsave("../figs/clonal-prevalence-sa609.png", width = 10, height = 4)
+ggsave("../figs/clonal-prevalence-sa609.png", width = 8, height = 4)
 ```
 
+# Parse CNV genes and "non CNV genes"
+
+
+```{r}
+df_by_gene <- drop_na(cnv) %>% 
+  group_by(ensembl_gene_id) %>% 
+  summarize(n_distinct_cnv = max(n_distinct_cnv),
+            sd_copy_number = max(sd_copy_number))
+
+cnv_genes <- dplyr::filter(df_by_gene, n_distinct_cnv > 1) %>% 
+  drop_na() %>% 
+  .$ensembl_gene_id
+
+non_cnv_genes <- dplyr::filter(df_by_gene, n_distinct_cnv == 1,
+                               sd_copy_number < 1) %>% 
+  drop_na() %>% 
+  .$ensembl_gene_id
+```
 
 
 # Differential expression
@@ -178,9 +209,47 @@ Useful functions:
 annotate_cnv_genes <- function(sce, cnv_genes, no_cnv_genes) {
   rowData(sce)$cnv_gene <- "unknown"
   rowData(sce)$cnv_gene[rownames(sce) %in% cnv_genes] <- "cnv"
-  rowData(sce)$cnv_gene[rownames(sce) %in% no_cnv_genes] <- "no_cnv"
+  rowData(sce)$cnv_gene[rownames(sce) %in% non_cnv_genes] <- "no_cnv"
   sce
 }
+```
+
+```{r}
+limma_voom_clone_de <- function(sce,
+                                clones) {
+  dge <- DGEList(counts(sce))
+  dge <- calcNormFactors(dge)
+  
+  design <- model.matrix(~ clones)
+  
+  colnames(design) <- gsub("clones", "", colnames(design), fixed = TRUE)
+  
+  v <- voom(dge, design, plot = TRUE)
+  
+  fit <- lmFit(v, design)
+  fit <- eBayes(fit)
+  res <- decideTests(fit)
+  
+  tibble(
+    ensembl_gene_id = rownames(sce),
+    symbol = rowData(sce)$Symbol,
+    p_value = fit$p.value[,2],
+    q_value = p.adjust(p_value, method = "BH"),
+    log_fc = fit$coefficients[,2]
+  )
+}
+```
+
+Work out what are high and low confidence genes
+
+```{r}
+cnv_nd <- filter(cnv, use_gene) %>% 
+  dplyr::select(ensembl_gene_id, cluster, copy_number) %>% 
+  group_by(ensembl_gene_id) %>% 
+  summarise(n_distinct_copy_numbers = n_distinct(copy_number))
+
+non_cnv_genes <- filter(cnv_nd, n_distinct_copy_numbers == 1) %>% .$ensembl_gene_id
+cnv_genes <- filter(cnv_nd, n_distinct_copy_numbers > 1) %>% .$ensembl_gene_id
 ```
 
 
@@ -189,7 +258,7 @@ annotate_cnv_genes <- function(sce, cnv_genes, no_cnv_genes) {
 ### A vs C
 
 ```{r}
-cnv_a_vs_c <- select(cnv, one_of(c("ensembl_gene_id", "entrezgene", "intra_clone_var", "inter_clone_var", "A", "C")))
+cnv_a_vs_c <- dplyr::select(cnv, one_of(c("ensembl_gene_id", "A", "C")))
 
 a_vs_c_cnv_gene <- filter(cnv_a_vs_c, A != C) %>% .$ensembl_gene_id
 a_vs_c_no_cnv_gene <- filter(cnv_a_vs_c, A == C) %>% .$ensembl_gene_id
@@ -199,193 +268,156 @@ a_vs_c_no_cnv_gene <- filter(cnv_a_vs_c, A == C) %>% .$ensembl_gene_id
 
 ```{r}
 sceX3 <- sces$X3
-sceX3 <- annotate_cnv_genes(sceX3, a_vs_c_cnv_gene, a_vs_c_no_cnv_gene)
+sceX3 <- annotate_cnv_genes(sceX3, cnv_genes, non_cnv_genes)
 
 sceX3_de <- sceX3[rowData(sceX3)$cnv_gene == "no_cnv", sceX3$clone %in% c("A", "C")]
 ```
 
 ```{r}
-sceX3_de <- sceX3[rowSums(as.matrix(counts(sceX3_de))) > 50,]
+sceX3_de <- sceX3_de[rowSums(as.matrix(counts(sceX3_de))) > 50,]
 ```
 
 ```{r}
-dge <- DGEList(counts(sceX3_de))
-dge <- calcNormFactors(dge)
-
-design <- model.matrix(~ sceX3_de$clone)
-
-colnames(design) <- gsub("sceX3_de$clone", "", colnames(design), fixed = TRUE)
-
-v <- voom(dge, design, plot = TRUE)
-
-fit <- lmFit(v, design)
-fit <- eBayes(fit)
-res <- decideTests(fit)
+x3_a_vs_c <- limma_voom_clone_de(sceX3_de, sceX3_de$clone)
 ```
 
 
 #### A vs C at X6
 
 
+```{r}
+sceX6 <- sces$X6
+sceX6 <- annotate_cnv_genes(sceX6, cnv_genes, non_cnv_genes)
+
+sceX6_de <- sceX6[rowData(sceX6)$cnv_gene == "no_cnv", sceX6$clone %in% c("A", "C")]
+```
+
+```{r}
+sceX6_de <- sceX6_de[rowSums(as.matrix(counts(sceX6_de))) > 50,]
+```
+
+```{r}
+x6_a_vs_c <- limma_voom_clone_de(sceX6_de, sceX6_de$clone)
+```
+
+#### Compare A vs C
+
+```{r, fig.width = 5, fig.height = 5}
+a_vs_c <- inner_join(x3_a_vs_c, x6_a_vs_c, by = c("ensembl_gene_id", "symbol"),
+                     suffix = c("_X3", "_X6"))
+
+ggplot(a_vs_c, aes(x = log_fc_X3, y = log_fc_X6)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm") +
+  theme_bw() +
+  labs(x = "logFC clone C vs A, X3",
+       y = "logFC clone C vs A, X6",
+       subtitle = "Concordance of clone-specific gene expression patterns in \n non-CNV altered genes between X3 and X6")
+```
+
+
 ### D vs E
 
+```{r}
+# cnv_d_vs_e <- select(cnv, one_of(c("ensembl_gene_id", "entrezgene", "intra_clone_var", "inter_clone_var", "D", "E")))
+# 
+# d_vs_e_cnv_gene <- filter(cnv_d_vs_e, D != E) %>% .$ensembl_gene_id
+# d_vs_e_no_cnv_gene <- filter(cnv_d_vs_e, D == E) %>% .$ensembl_gene_id
+```
+
+
 #### D vs E at X6
+
+
+```{r}
+sceX6 <- sces$X6
+sceX6 <- annotate_cnv_genes(sceX6, cnv_genes, non_cnv_genes)
+
+sceX6_de <- sceX6[rowData(sceX6)$cnv_gene == "no_cnv", sceX6$clone %in% c("D", "E")]
+```
+
+```{r}
+sceX6_de <- sceX6_de[rowSums(as.matrix(counts(sceX6_de))) > 50,]
+```
+
+```{r}
+x6_d_vs_e <- limma_voom_clone_de(sceX6_de, sceX6_de$clone)
+```
 
 #### D vs E at X10
 
 
+```{r}
+sce10 <- sces$X10
+sce10 <- annotate_cnv_genes(sce10, cnv_genes, non_cnv_genes)
+
+sceX10_de <- sce10[rowData(sce10)$cnv_gene == "no_cnv", sce10$clone %in% c("D", "E")]
+```
+
+```{r}
+sceX10_de <- sceX10_de[rowSums(as.matrix(counts(sceX10_de))) > 50,]
+```
+
+```{r}
+x10_d_vs_e <- limma_voom_clone_de(sceX10_de, sceX10_de$clone)
+```
+
+#### Compare D vs E
+
+```{r, fig.width = 5, fig.height = 5}
+d_vs_e <- inner_join(x6_d_vs_e, x10_d_vs_e, by = c("ensembl_gene_id", "symbol"),
+                     suffix = c("_X6", "_X10"))
+
+ggplot(d_vs_e, aes(x = log_fc_X6, y = log_fc_X10)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm")  +
+  labs(x = "logFC clone D vs E, X6",
+       y = "logFC clone D vs E, X10")
+```
 
 ## X6 DE
 
-# Diagnostic plots
-
-## Convergence
+Explore differential expression of C and D at X6
 
 ```{r}
-qplot(seq_along(ca$elbo), ca$elbo) +
-  labs(x = "Iteration", y = "ELBO")
-```
+cnv_c_vs_d <- select(cnv, one_of(c("ensembl_gene_id", "entrezgene", "intra_clone_var", "inter_clone_var", "C", "D")))
 
-## Clone assignment
-
-```{r}
-pheatmap(ca$ml_params$clone_probs)
-```
-
-
-```{r}
-rna_clone_prev <- enframe(table(ca$clone), "clone", "n_rna") %>% 
-  dplyr::mutate(freq_rna = n_rna / sum(n_rna))
-```
-
-Compare to CNV
-
-```{r}
-timepoint <- sce$timepoint[1]
-
-df_clone_prev <- filter(df_clone_prev, time == timepoint)
-```
-
-
-```{r}
-df_compare_prev <- df_clone_prev %>% 
-  dplyr::select(-time) %>% 
-  dplyr::rename(clone = cluster) %>% 
-  mutate(freq = n / sum(n)) %>%
-  rename(freq_dna = freq, n_dna = n) %>% 
-  dplyr::full_join(rna_clone_prev, by = "clone") %>% 
-  replace_na(list(n_dna = 0, freq_dna = 0, n_rna = 0, freq_rna = 0))
-
-print(df_compare_prev)
-```
-
-
-```{r}
-ggplot(df_compare_prev, aes(x = freq_dna, y = freq_rna)) +
-  geom_abline(slope = 1, intercept = 0, colour = 'grey50') +
-  # geom_point() +
-  geom_text(aes(label = clone)) +
-  labs(x = "Clone prevalence DNA", y = "Clone prevalence RNA") +
-  theme_bw() 
-```
-
-## Expression vs copy number track plots
-
-```{r, message = FALSE, warning = FALSE}
-unique_chrs <- sort(unique(rowData(sce)$chromosome_name))
-
-for(chr in unique_chrs) {
-  tryCatch({
-    print(plot_clonealign(sce[rownames(cnv_mat),], ca$clone, cnv_mat, chromosome = chr,
-                    chr_str = "chromosome_name", expression_ylim = c(-.2, .2)))
-  }, error = function(e) NULL)
-}
-```
-
-
-## Correlation between genome and transcriptome
-
-```{r}
-sce_ca <- sce[rownames(cnv_mat),]
-
-compute_correlation <- function(i) {
-  y <- logcounts(sce_ca)[i,]
-  x <- cnv_mat[i, ca$clone]
-  c <- cor(x,y, method = "spearman")
-  tibble(mean_log_expression = mean(y), correlation = c)
-}
-
-df_cor <- bind_rows(lapply(seq_len(nrow(sce_ca)), compute_correlation))
-```
-
-```{r}
-ggplot(df_cor, aes(x = mean_log_expression, y=  correlation)) +
-  geom_point() +
-  geom_smooth()
-```
-
-```{r}
-ggplot(df_cor, aes(x = correlation)) +
-  geom_histogram(fill = 'grey90', colour ='black', bins = 100) +
-  geom_vline(xintercept = mean(df_cor$correlation, na.rm = TRUE), linetype = 2, colour = 'darkred', size = 1) +
-  theme_bw() +
-  labs(x = "Genome-transcriptome correlation")
+c_vs_d_cnv_gene <- filter(cnv_c_vs_d, C != D) %>% .$ensembl_gene_id
+c_vs_d_no_cnv_gene <- filter(cnv_c_vs_d, C == D) %>% .$ensembl_gene_id
 
 ```
 
 ```{r}
-print(summary(df_cor$correlation))
-```
-
-
-# Differential expression analysis
-
-
-## Find genes in copy number altered regions
-
-
-```{r}
-df_clone_specific_genes <- dplyr::select(cnv_df, -entrezgene, -intra_clone_var, -inter_clone_var) %>% 
-  gather(clone, copy_number, -ensembl_gene_id) %>% 
-  group_by(ensembl_gene_id) %>% 
-  summarise(cn_diff_between_clones = var(copy_number) > 0)
-
-head(df_clone_specific_genes)
-```
-
-```{r}
-print(table(df_clone_specific_genes$cn_diff_between_clones))
-```
-
-```{r}
-non_cnv_genes <- dplyr::filter(df_clone_specific_genes, !cn_diff_between_clones) %>% 
-  .$ensembl_gene_id
-```
-
-
-## Differential expression
-
-Subset SCE to (i) non CNV different genes, and (ii)
-
-```{r}
-sce_de <- sce[non_cnv_genes[non_cnv_genes %in% rownames(sce)],]
-```
-
-```{r}
-sce_de <- calculateQCMetrics(sce_de)
-
-sce_de <- sce_de[rowData(sce_de)$total_counts > 200,]
+cnv_diff <- dplyr::filter(cnv, !gene_span_breakpoint) %>% 
+  dplyr::select(ensembl_gene_id, clone, median_copy_number) %>% 
+  drop_na() %>% 
+  distinct() %>% 
+  spread(clone, median_copy_number) %>% 
+  dplyr::mutate(cnv_diff = D - C)
 ```
 
 
 
 ```{r}
-dge <- DGEList(counts(sce_de))
+sceX6 <- sces$X6
+sceX6 <- annotate_cnv_genes(sceX6, cnv_genes, non_cnv_genes)
+
+sceX6_de <- sceX6[,sceX6$clone %in% c("C", "D")]
+```
+
+```{r}
+sceX6_de <- sceX6_de[rowSums(as.matrix(counts(sceX6_de))) > 50,]
+```
+
+```{r}
+design <- model.matrix(~ sceX6_de$clone)
+
+dge <- DGEList(counts(sceX6_de))
 dge <- calcNormFactors(dge)
+dge <- estimateDisp(dge, design = design)
 
-design <- model.matrix(~ ca$clone)
 
-colnames(design) <- gsub("ca$clone", "", colnames(design), fixed = TRUE)
+colnames(design) <- gsub("sceX6_de$clone", "", colnames(design), fixed = TRUE)
 
 v <- voom(dge, design, plot = TRUE)
 
@@ -393,33 +425,103 @@ fit <- lmFit(v, design)
 fit <- eBayes(fit)
 res <- decideTests(fit)
 
+x6_cd <- tibble(
+  ensembl_gene_id = rownames(sceX6_de),
+  symbol = rowData(sceX6_de)$Symbol,
+  p_value = fit$p.value[,2],
+  q_value = p.adjust(p_value, method = "BH"),
+  log_fc = fit$coefficients[,2],
+  cnv_gene = rowData(sceX6_de)$cnv_gene
+)
 ```
 
-Diagnostic plots:
-
 ```{r}
-plotDensities(fit)
-plotMA(fit)
+x6_cd <- inner_join(x6_cd, cnv_diff)
 ```
 
-## Volcano plots
-
 ```{r}
-coefs <- seq_len(ncol(design) - 1) + 1
+x6_cd$cnv_diff <- factor(x6_cd$cnv_diff)
 
-voom_results <- lapply(coefs, make_volcano, fit, sce_de, ca)
+cnv_diff_cols <- c(
+  "0"="grey50",
+  "-2"="#e08214",
+  "-1"="#fdb863",
+  "1"="#b2abd2",
+  "2"="#8073ac",
+  "3"="#542788"
+)
+
+df_cnv <- dplyr::filter(x6_cd, cnv_gene == "cnv") 
+
+df_ann <- top_n(df_cnv, 30, abs(log_fc))
+
+df_cnv %>% 
+  ggplot(aes(x = log_fc, y = -log10(q_value), colour = cnv_diff)) +
+  geom_point() +
+  scale_colour_manual(values = cnv_diff_cols, 
+                      name = "Difference in copy number, D vs C") +
+  cowplot::theme_cowplot(font_size = 11) +
+  theme(legend.position = "top") +
+  labs(x = "logFC, clone D vs C") +
+  geom_text_repel(data = df_ann, aes(label = symbol), colour = 'black')
 ```
 
-Display the plots:
 
 ```{r}
-for(i in seq_along(voom_results)) {
-  plot(voom_results[[i]]$plot)
+
+
+df_no_cnv <- filter(x6_cd, cnv_gene == "no_cnv") 
+
+df_ann <- top_n(df_no_cnv, 30, abs(log_fc))
+
+df_no_cnv %>% 
+  ggplot(aes(x = log_fc, y = -log10(q_value))) +
+  geom_point() +
+  cowplot::theme_cowplot(font_size = 11) + 
+  labs(x = "logFC, clone D vs C") +
+  geom_text_repel(data = df_ann, aes(label = symbol), colour = 'black')
+```
+
+
+# Camera gene set enrichment analysis
+
+
+```{r}
+load(here("data/extdata/human_H_v5p2.rdata"))
+go_gs <- Hs.H
+
+entrezgene_ensembl_map <- as.list(org.Hs.egENSEMBL)
+
+map_ids <- function(entrezgenes) {
+  x <- unlist(entrezgene_ensembl_map[entrezgenes])
+  names(x) <- NULL
+  x
 }
 ```
 
 ```{r}
-saveRDS(voom_results, params$output_voom_results)
+go_gs_ensembl <- lapply(go_gs, map_ids)
+names(go_gs_ensembl) <- sub("GO_", "", names(go_gs_ensembl))
+
+idx <- ids2indices(go_gs_ensembl, id = c_vs_d_no_cnv_gene)
+cam <- camera(dge[c_vs_d_no_cnv_gene,], idx, design, trend.var = TRUE)
 ```
 
 
+```{r}
+pathways <- names(go_gs_ensembl)
+
+cam <- rownames_to_column(cam, "pathway")
+
+
+df_lfc <- lapply(pathways, function(pathway) {
+  tt[idx[[pathway]], ] %>% 
+  summarise(mean_log2foldchange = mean(logFC), pathway = pathway)
+}) %>% 
+  bind_rows()
+
+df_gs <- inner_join(cam, df_lfc) %>% 
+  dplyr::mutate(significant = FDR < 0.05,
+                cell_type = params$cell_type) %>% 
+  as_tibble()
+```

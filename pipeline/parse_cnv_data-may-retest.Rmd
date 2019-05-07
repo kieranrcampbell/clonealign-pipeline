@@ -1,0 +1,266 @@
+---
+title: "Preparing copy number data for input to clonealign for sample `r params$id`"
+output:
+  html_document: 
+    toc: true
+    toc_float: true
+  html_notebook: default
+params:
+  pdx: SA609
+  output_df: path_to_output.csv
+  prevalence_csv: prev.csv
+  max_copy_number_trust: 5
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  cache = FALSE
+)
+
+
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+  library(org.Hs.eg.db)
+  library(GenomicRanges)
+  library(matrixStats)
+  library(tidyverse)
+  library(here)
+})
+
+# tensorflow::install_tensorflow(extra_packages ="tensorflow-probability", version="1.13.1")
+```
+
+
+# Read in data
+
+
+```{r}
+cnv_files <- dir(here("data", "cnv_clones", params$pdx), full.names=TRUE)
+
+cnv_df <- map_df(cnv_files, read_csv,
+                 col_types = list(chr = col_character()))
+```
+
+Make into proportions
+
+
+```{r}
+cntd <- count(cnv_df, chr, start, end, copy_number, cluster)
+
+
+cnv_probs <- group_by(cntd, chr, start, end, cluster) %>% 
+  mutate(total_cells = sum(n)) %>% 
+  ungroup() %>% 
+  mutate(p = n / total_cells)
+```
+
+```{r}
+
+```
+
+```{r, fig.width=10, fig.height=3}
+df_max_prob <- group_by(cnv_probs, chr, start, end, cluster) %>% 
+  summarise(max_prob = max(p))
+
+df_max_prob %>% 
+  ggplot(aes(x = max_prob)) +
+  geom_histogram() +
+  facet_grid( ~ cluster)
+```
+
+```{r}
+df_minmax <- group_by(df_max_prob, chr, start, end) %>% 
+  summarise(max_max = max(max_prob),
+            min_max = min(max_prob)) %>% 
+  ungroup()
+```
+
+```{r}
+ggplot(df_minmax, aes(x = max_max, y = min_max)) +
+  geom_point()
+```
+
+
+
+# Write prevalences
+
+
+
+Write cloneal prevalences
+
+```{r}
+prev_df <- dplyr::select(cnv_df, cell_names, cluster, time) %>% 
+  distinct() %>% 
+  dplyr::count(cluster, time) %>% 
+  dplyr::mutate(freq = n / sum(n))
+
+prev_df
+```
+
+```{r}
+write_csv(prev_df, params$prevalence_csv)
+```
+
+
+
+# Converting region-based copy number to gene based
+
+
+## Loading the  gene database and making sure chromosome names match
+
+Next, we load the database of genes. In this example we choose the hg19 annotation, since our correspodning single-cell RNA-seq is aligned to hg19, and the copy number data (above) has been aligned to hg19. Thus we set
+
+```{r}
+txdb <- TxDb.Hsapiens.UCSC.hg19.knownGene
+```
+
+
+We can then load the corresponding gene annotations via
+
+```{r}
+g <- genes(txdb, single.strand.genes.only=FALSE)
+g
+```
+
+
+
+One issue that creates perennial worldwide angst is that our chromosome names are 1,2,3,... whereas those with gene annotation are chr1, chr2, chr3,... We fix this by changing our original data frame as follows:
+
+```{r}
+cnv_df <- dplyr::mutate(cnv_df, chr = paste0("chr", chr))
+```
+
+Let's add in the original co-ordinates for dbugging
+
+```{r}
+cnv_df$.chr <- cnv_df$chr
+cnv_df$.start <- cnv_df$start
+cnv_df$.end <- cnv_df$end
+```
+
+
+We can then convert this to a `GRanges` object:
+
+```{r}
+cnv_gr <- makeGRangesFromDataFrame(cnv_df, keep.extra.columns = TRUE)
+cnv_gr
+```
+
+## Finding overlaps between gene and region based annotation
+
+Then we compute the overlaps between the gene annotation and the copy number data:
+
+```{r}
+olaps <- findOverlaps(g, cnv_gr)
+olaps
+```
+
+Here, the first column represents the index of each gene in `g` (that can be accessed with `queryHits(olaps)`), while the second column represents the index of each copy number region (`subjectHits(olaps)`). We can then convert this into a gene and copy number data frame:
+
+```{r}
+df_gene <- tibble(entrezgene = names(g)[queryHits(olaps)])
+
+
+for(n in names(mcols(cnv_gr))) {
+  df_gene[[ n ]] <- mcols(cnv_gr)[[ n ]][subjectHits(olaps)]
+}
+```
+
+Next, we'd like to map on ensembl gene ids:
+
+
+```{r}
+df_gene$ensembl_gene_id <- mapIds(org.Hs.eg.db, 
+                                  keys = df_gene$entrezgene, 
+                                  column="ENSEMBL", 
+                                  keytype="ENTREZID", 
+                                  multiVals="first")
+```
+
+
+
+Finally, do a bit of tidy up: if the gene spans a breakpoint but everything else is good, then we pass it
+
+```{r}
+df_gene <- drop_na(df_gene)
+
+# df_gene$copy_number[df_gene$copy_number > params$max_copy_number_trust] <- params$max_copy_number_trust
+
+df_gene2 <- count(df_gene, ensembl_gene_id, cluster, copy_number) %>% 
+  group_by(ensembl_gene_id, cluster) %>% 
+  mutate(p = n / sum(n)) %>% 
+  ungroup()
+```
+
+Work out "good" and "bad" regions
+
+```{r, fig.width = 8, fig.height = 3}
+df_gc_ml <- group_by(df_gene2, ensembl_gene_id, cluster) %>% 
+  summarise(p_most_likely = max(p)) %>% 
+  ungroup() 
+
+ggplot(df_gc_ml, aes(x = p_most_likely)) +
+  geom_histogram() +
+  facet_wrap(~ cluster, nrow = 1) +
+  labs(y = "# genes",
+       x = "Probability of most likely copy number")
+```
+
+```{r fig.width = 8, fig.height = 6}
+df_by_gene_ml <- group_by(df_gc_ml, ensembl_gene_id) %>% 
+  summarise(max_p_most_likely = max(p_most_likely),
+         min_p_most_likely = min(p_most_likely)) %>% 
+  ungroup() %>% 
+  mutate(use_gene = max_p_most_likely > 0.9 & min_p_most_likely > 0.8)
+
+ggplot(df_by_gene_ml, aes(x = max_p_most_likely, y = min_p_most_likely, colour = use_gene)) +
+  geom_point() +
+  labs(x = "For gene, max most likely value across clones",
+       y = "For gene, min most likely value across clones") +
+  scale_colour_brewer(palette = "Set2", name = "use gene for clonealign")
+```
+
+
+
+
+
+## Tidy up for input to clonealign
+
+```{r}
+df_gene_summarized <- group_by(df_gene2, ensembl_gene_id, cluster) %>%
+  top_n(1, p) %>% 
+  ungroup()
+```
+
+```{r}
+df_gene_summarized <- inner_join(df_gene_summarized, df_by_gene_ml)
+```
+
+final interesting plot
+
+```{r}
+ggplot(df_gene_summarized, aes(x = factor(copy_number), y = max_p_most_likely, fill = use_gene)) + 
+  geom_boxplot() +
+  labs(x = "Copy number",
+       y = "Max prob of copy number")
+```
+
+
+## Creating and filtering the input for clonealign
+
+```{r}
+write_csv(df_gene_summarized, params$output_df)
+```
+
+
+
+# Technical
+
+```{r}
+sessionInfo()
+```
+
+

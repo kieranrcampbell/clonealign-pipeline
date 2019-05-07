@@ -8,8 +8,8 @@ output:
 params:
   id: SA609XXX
   pdx: SA609
-  clone_prevs: clone_prevs.csv
-  input_sce: input_sce
+  clone_prevs: "../data/processed_cnv/clone_prevalence_SA609.csv"
+  input_sce: "../data/sces/sce-qc_SA609X3XB01584.rds"
   output_rds: output.rds
   output_cnv: output.cnv
   gex_var_quantile: 0.5
@@ -57,14 +57,19 @@ df_clone_prev <- read_csv(params$clone_prevs)
 
 timepoint <- sce$timepoint[1]
 
-df_clone_prev <- filter(df_clone_prev, time == timepoint)
+df_clone_prev <- dplyr::filter(df_clone_prev, time == timepoint)
 
 present_clones <- unique(df_clone_prev$cluster)
 ```
 
+Select CNV at time point and spread out:
 
 ```{r}
-cnv <- dplyr::select(cnv, one_of(c("ensembl_gene_id", "entrezgene", "intra_clone_var", "inter_clone_var", present_clones)))
+cnv <- dplyr::filter(cnv, use_gene) %>%
+  dplyr::rename(clone = cluster) %>% 
+  dplyr::select(ensembl_gene_id, clone, copy_number) %>% 
+  dplyr::filter(clone %in% present_clones) %>% 
+  spread(clone, copy_number)
 ```
 
 
@@ -72,47 +77,17 @@ cnv <- dplyr::select(cnv, one_of(c("ensembl_gene_id", "entrezgene", "intra_clone
 
 
 
-## Copy number
-
-Distribution of within-clone copy number variances:
-
-```{r}
-ggplot(cnv, aes(x = intra_clone_var, y = inter_clone_var)) +
-  geom_point() +
-  scale_x_log10() +
-  scale_y_log10()
-
-```
-
-
-
-
-
-```{r}
-cnv <- dplyr::filter(cnv, 
-              intra_clone_var < 1, 
-              inter_clone_var > 0,
-              intra_clone_var < 0.5 * inter_clone_var)
-```
-
 Now turn into matrix:
 
 ```{r}
-cnv_mat <- dplyr::select(cnv, -(ensembl_gene_id:inter_clone_var)) %>% 
+cnv_mat <- dplyr::select(cnv, -ensembl_gene_id) %>% 
   as.matrix()
 
 rownames(cnv_mat) <- cnv$ensembl_gene_id
 ```
 
-And filter genes:
-
 ```{r}
-keep_gene_cnv <- rowMaxs(cnv_mat) < 7 & rowMins(cnv_mat) > 0 & rowVars(cnv_mat) > 0
-print(table(keep_gene_cnv))
-```
-
-```{r}
-cnv_mat <- cnv_mat[keep_gene_cnv,]
+cnv_mat <- cnv_mat[rowVars(cnv_mat) > 0 & rowMins(cnv_mat) > 0 & rowMaxs(cnv_mat) <= 5,]
 ```
 
 
@@ -170,7 +145,11 @@ devtools::load_all("/cellassign/clonealign-multinomial/")
 
 ca <- run_clonealign(sce, 
                      cnv_mat,
-                     max_iter = 500)
+                     initial_shrinks = c(0, 10),
+                     n_repeats = 5,
+                     mc_samples = 1,
+                     learning_rate = 0.06,
+                     max_iter = 600)
 
 
 ```

@@ -6,9 +6,10 @@ output:
     toc_float: true
   html_notebook: default
 params:
-  pdx: SA535
+  pdx: SA609
   output_df: path_to_output.csv
   prevalence_csv: prev.csv
+  max_copy_number_trust: 5
 ---
 
 ```{r setup, include = FALSE}
@@ -28,11 +29,12 @@ suppressPackageStartupMessages({
   library(tidyverse)
   library(here)
 })
+
+# tensorflow::install_tensorflow(extra_packages ="tensorflow-probability", version="1.13.1")
 ```
 
 
 # Read in data
-
 
 
 ```{r}
@@ -47,117 +49,99 @@ cnv_df <- map_df(cnv_files, read_csv,
 
 ```{r}
 cnv_clone <- 
-  group_by(cnv_df, chr, start, end, cluster, time) %>% 
-  summarise(median_copy_number = median(copy_number)) %>% 
-  ungroup()
-```
-
-
-
-```{r}
-cnv_df_B <- filter(cnv_df, cluster == "B")
-
-chr_levels <- c(as.character(1:23), "X", "Y")
-cnv_df_B$chr <- factor(cnv_df_B$chr, levels = chr_levels)
-cnv_df_B$copy_number_chr <- as.character(round(cnv_df_B$copy_number))
-cnv_df_B$copy_number_chr[cnv_df_B$copy_number > 5] <- "6+"
-
-cnv_cols <- c("0" = "#2166ac",
-              "1" = "#92c5de", 
-              "2" = "grey80", 
-              "3" = "#f4a582", 
-              "4" = "#d6604d",
-              "5" = "#b2182b",
-              "6+" = "#67001f")
-
-ggplot(cnv_df_B, aes(x = start, y = cell_names, fill = copy_number_chr)) +
-  geom_raster() +
-  facet_grid(time ~ chr, scales = "free", space = "free_x", switch = "both") +
-  scale_fill_manual(values = cnv_cols, name = "Copy Number") +
-  labs(x = "Chromosome", y = "Clone", subtitle = "Cluster B only") +
-  theme_bw() +
-  theme(axis.text = element_blank(),
-        axis.ticks = element_blank(),
-        strip.background = element_rect(fill = 'white'),
-        legend.position = "bottom") +
-  scale_x_continuous(expand = c(0,0)) +
-  scale_y_discrete(expand = c(0,0)) 
-
-```
-
-
-
-
-
-
-```{r}
-chr_levels <- c(as.character(1:23), "X", "Y")
-cnv_clone$chr <- factor(cnv_clone$chr, levels = chr_levels)
-cnv_clone$copy_number_chr <- as.character(round(cnv_clone$median_copy_number))
-cnv_clone$copy_number_chr[cnv_clone$median_copy_number > 5] <- "6+"
-
-cnv_cols <- c("0" = "#2166ac",
-              "1" = "#92c5de", 
-              "2" = "grey80", 
-              "3" = "#f4a582", 
-              "4" = "#d6604d",
-              "5" = "#b2182b",
-              "6+" = "#67001f")
-
-ggplot(cnv_clone, aes(x = start, y = time, fill = copy_number_chr)) +
-  geom_raster() +
-  facet_grid(cluster ~ chr, scales = "free", space = "free", switch = "both") +
-  scale_fill_manual(values = cnv_cols, name = "Copy Number") +
-  labs(x = "Chromosome", y = "Clone") +
-  theme_bw() +
-  theme(axis.text.x = element_blank(),
-        axis.ticks = element_blank(),
-        strip.background = element_rect(fill = 'white'),
-        legend.position = "bottom") +
-  scale_x_continuous(expand = c(0,0)) +
-  scale_y_discrete(expand = c(0,0)) 
-
-```
-
-
-```{r}
-filter(cnv_df, chr == "1", cluster == "E", time == "X6") %>% 
-  ggplot() +
-  geom_segment(aes(x = start, xend = end, y = copy_number, yend = copy_number )) +
-  facet_wrap(~ cell_names)
-
-```
-
-
-# Summarize
-
-Group to clone level:
-
-```{r}
-clone_df <- dplyr::select(cnv_df, -cell_names, -time) %>% 
-  group_by(chr, start, end, cluster) %>% 
+  group_by(cnv_df, chr, start, end, cluster) %>% 
   summarise(median_copy_number = median(copy_number),
-            var_copy_number = var(copy_number)) %>% 
-  ungroup()
-
-clone_df <- replace_na(clone_df, list(var_copy_number = 0))
+            sd_copy_number = sd(copy_number)) %>% 
+  ungroup() %>% 
+  rename(clone = cluster)
 ```
 
-And get the minimum variance per region:
+Compute some useful cross-clone metrics
 
 ```{r}
-clone_df <- group_by(clone_df, chr, start, end) %>% 
-  summarise(intra_clone_var = median(var_copy_number),
-            inter_clone_var = var(median_copy_number)) %>% 
-  inner_join(clone_df) %>% 
+cnv_clone <- group_by(cnv_clone, chr, start, end) %>% 
+  summarize(between_clone_sd_copy_number = sd(median_copy_number),
+            n_distinct_cnv = n_distinct(median_copy_number),
+            max_copy_number = max(median_copy_number)) %>% 
+  ungroup() %>% 
+  inner_join(cnv_clone) %>% 
+  mutate(log_ratio = log2(between_clone_sd_copy_number / sd_copy_number))
+```
+
+Make some plots:
+
+```{r fig.width = 10}
+cnv_clone$chr <- factor(cnv_clone$chr, levels = c(as.character(1:23), "X", "Y"))
+
+cnv_clone %>% 
+  ggplot(aes(x = start, xend = end, y = median_copy_number, yend = median_copy_number)) +
+  geom_segment(size = 1.2) +
+  facet_grid(clone ~ chr, scales = "free_x", space = "free_x")
+
+
+# ggsave("../figs/deleteme.png", width = 12, height = 6)
+```
+
+
+
+```{r fig.width = 10}
+cnv_clone %>% 
+  ggplot(aes(x = start, xend = end, y = sd_copy_number, yend = sd_copy_number)) +
+  geom_segment(size = 1.2) +
+  facet_grid(clone ~ chr, scales = "free_x", space = "free_x")
+
+# ggsave("../figs/deleteme.png", width = 12, height = 6)
+```
+
+```{r fig.width = 10}
+cnv_clone %>% 
+  ggplot(aes(x = start, xend = end, y = log_ratio, yend = log_ratio)) +
+  geom_segment(size = 1.2) +
+  facet_grid(clone ~ chr, scales = "free_x", space = "free_x")
+
+# ggsave("../figs/deleteme.png", width = 12, height = 6)
+```
+
+
+```{r}
+df_mlr <- group_by(cnv_clone, chr, start, end) %>% 
+  summarise(median_log_ratio = median(log_ratio),
+            max_copy_number = max(median_copy_number)) %>% 
   ungroup()
 ```
 
-And convert to consistent name:
+```{r}
+df_mlr <- mutate(df_mlr, pass_region = median_log_ratio > 0 & max_copy_number <= params$max_copy_number_trust) %>% 
+  replace_na(replace = list(pass_region = FALSE))
+```
+
+
+```{r fig.width = 12, fig.height = 3}
+ggplot(df_mlr, aes(x = start, xend = end, y = median_log_ratio, yend = median_log_ratio, colour = pass_region)) +
+  geom_segment(size = 2) +
+  facet_grid(. ~ chr, scales = "free_x", space = "free_x") +
+  scale_colour_brewer(palette = "Set2")
+```
+
 
 ```{r}
-df_cnv <- dplyr::select(clone_df, chr, start, end, clone = cluster, copy_number = median_copy_number, intra_clone_var, inter_clone_var)
+cnv_clone <- inner_join(cnv_clone, df_mlr) %>% 
+  ungroup()
 ```
+
+
+
+```{r}
+ggplot(cnv_clone, aes(x = start, xend = end, y = n_distinct_cnv, yend = n_distinct_cnv, colour = pass_region)) +
+  geom_segment(size = 2) +
+  facet_grid(. ~ chr, scales = "free_x", space = "free_x") +
+  scale_colour_brewer(palette = "Set2")
+```
+
+
+# Write prevalences
+
+
 
 Write cloneal prevalences
 
@@ -169,6 +153,7 @@ prev_df <- dplyr::select(cnv_df, cell_names, cluster, time) %>%
 
 prev_df
 ```
+
 ```{r}
 write_csv(prev_df, params$prevalence_csv)
 ```
@@ -199,13 +184,22 @@ g
 One issue that creates perennial worldwide angst is that our chromosome names are 1,2,3,... whereas those with gene annotation are chr1, chr2, chr3,... We fix this by changing our original data frame as follows:
 
 ```{r}
-df_cnv <- dplyr::mutate(df_cnv, chr = paste0("chr", chr))
+cnv_clone <- dplyr::mutate(cnv_clone, chr = paste0("chr", chr))
 ```
+
+Let's add in the original co-ordinates for dbugging
+
+```{r}
+cnv_clone$.chr <- cnv_clone$chr
+cnv_clone$.start <- cnv_clone$start
+cnv_clone$.end <- cnv_clone$end
+```
+
 
 We can then convert this to a `GRanges` object:
 
 ```{r}
-cnv_gr <- makeGRangesFromDataFrame(df_cnv, keep.extra.columns = TRUE)
+cnv_gr <- makeGRangesFromDataFrame(cnv_clone, keep.extra.columns = TRUE)
 cnv_gr
 ```
 
@@ -221,51 +215,68 @@ olaps
 Here, the first column represents the index of each gene in `g` (that can be accessed with `queryHits(olaps)`), while the second column represents the index of each copy number region (`subjectHits(olaps)`). We can then convert this into a gene and copy number data frame:
 
 ```{r}
-df_gene <- data_frame(entrezgene = names(g)[queryHits(olaps)], 
-           copy_number = mcols(cnv_gr)$copy_number[subjectHits(olaps)],
-           clone = mcols(cnv_gr)$clone[subjectHits(olaps)],
-           intra_clone_var = mcols(cnv_gr)$intra_clone_var[subjectHits(olaps)],
-           inter_clone_var = mcols(cnv_gr)$inter_clone_var[subjectHits(olaps)])
+df_gene <- tibble(entrezgene = names(g)[queryHits(olaps)])
+
+
+for(n in names(mcols(cnv_gr))) {
+  df_gene[[ n ]] <- mcols(cnv_gr)[[ n ]][subjectHits(olaps)]
+}
 ```
 
 Next, we'd like to map on ensembl gene ids:
 
 
 ```{r}
-entrezgene_ensembl_map <- as.list(org.Hs.egENSEMBL)
-entrezgene_ensembl_map <- lapply(entrezgene_ensembl_map, `[`, 1)
-
-df_gene <- dplyr::filter(df_gene, entrezgene %in% names(entrezgene_ensembl_map)) %>% 
-  dplyr::mutate(ensembl_gene_id = unlist(entrezgene_ensembl_map[entrezgene])) %>% 
-  dplyr::select(ensembl_gene_id, entrezgene, copy_number, clone, intra_clone_var, inter_clone_var) %>% 
-  drop_na()
-
-df_gene
+df_gene$ensembl_gene_id <- mapIds(org.Hs.eg.db, 
+                                  keys = df_gene$entrezgene, 
+                                  column="ENSEMBL", 
+                                  keytype="ENTREZID", 
+                                  multiVals="first")
 ```
 
 We may find non-unique mappings. This can be due to genes spanning breakpoints or multi-mappings to e.g. pseudo-autosomal regions. To fix this, we retain only genes that are uniquely mapped:
 
 ```{r}
-df_gene <- dplyr::count(df_gene, ensembl_gene_id) %>% 
-  dplyr::filter(n == length(unique(df_gene$clone))) %>% 
-  inner_join(df_gene) %>% 
-  dplyr::select(-n)
+gene_counts <- dplyr::count(df_gene, entrezgene) 
+
+df_gene <- inner_join(df_gene, gene_counts) %>% 
+  rename(n_times_gene_map = n)
+
+target_count <- unique(gene_counts$n)
+target_count <- min(target_count[target_count > 0])
+
+df_gene <- mutate(df_gene,
+                  gene_span_breakpoint = n_times_gene_map > target_count)
 ```
+
+Finally, do a bit of tidy up: if the gene spans a breakpoint but everything else is good, then we pass it
+
+```{r}
+df_breakpoint <- filter(df_gene, gene_span_breakpoint) %>% 
+  group_by(entrezgene, clone) %>% 
+  summarize(sd_breakpoint_gene = sd(median_copy_number)) %>% 
+  group_by(entrezgene) %>% 
+  summarize(gene_same_across_breakpoint = all(sd_breakpoint_gene == 0))
+```
+
+```{r}
+genes_same_across_breakpoint <- filter(df_breakpoint, gene_same_across_breakpoint) %>% 
+  .$entrezgene
+
+# Correct those
+df_gene$gene_span_breakpoint[df_gene$entrezgene %in% genes_same_across_breakpoint] <- FALSE
+```
+
+```{r}
+df_gene <- mutate(df_gene, use_for_clonealign = !gene_span_breakpoint & pass_region)
+```
+
 
 
 ## Creating and filtering the input for clonealign
 
-Clonealign requires a gene by clone matrix as input, so to create this we'll use the `spread` function from `tidyr`:
-
 ```{r}
-df_gene_expanded <- spread(df_gene, clone, copy_number)
-head(df_gene_expanded)
-```
-
-And save this:
-
-```{r}
-write_csv(df_gene_expanded, params$output_df)
+write_csv(df_gene, params$output_df)
 ```
 
 
